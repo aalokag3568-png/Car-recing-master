@@ -1,0 +1,392 @@
+<!DOCTYPE html>
+<html lang="hi">
+<head>
+<meta charset="UTF-8" />
+<title>3D Car Racing - Updated</title>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<style>
+  body{ margin:0; overflow:hidden; font-family:system-ui, sans-serif; background:#111; color:#fff;}
+  canvas{ display:block; }
+  #hud{ position:absolute; top:12px; left:50%; transform:translateX(-50%); background:rgba(0,0,0,0.45);
+        padding:8px 14px; border-radius:8px; z-index:10; font-size:18px; }
+  .overlay{ position:fixed; inset:0; display:flex; align-items:center; justify-content:center;
+            background:rgba(0,0,0,0.75); z-index:30; flex-direction:column; gap:12px; }
+  .hidden{ display:none; }
+  button{ cursor:pointer; border:0; border-radius:10px; padding:10px 18px; font-size:16px; }
+  #mainMenu .title{ font-size:34px; font-weight:700; margin-bottom:6px; }
+  #mainMenu button{ background:linear-gradient(90deg,#00b4db,#0083b0); color:#fff; box-shadow:0 8px 24px rgba(0,140,200,0.25);}
+  #carStoreOverlay{ gap:10px; }
+  .carBtn{ background:#333; color:#fff; padding:8px 12px; width:200px; text-align:left; }
+  #gameOverOverlay .big{ font-size:28px; font-weight:700; }
+  #nextLevelBtn{
+    background:linear-gradient(45deg,#ffafbd,#ffc3a0); color:#222; font-weight:700;
+    padding:12px 26px; font-size:18px; border-radius:18px;
+    box-shadow:0 0 18px rgba(255,175,189,0.6), inset 0 -6px 18px rgba(0,0,0,0.08);
+    transform-origin:center;
+    animation:glow 1.6s infinite alternate;
+  }
+  @keyframes glow{ from{ transform:scale(1); box-shadow:0 0 15px rgba(255,175,189,0.6);} to{ transform:scale(1.06); box-shadow:0 0 30px rgba(255,195,160,0.9);} }
+  #mobileControls{ position:fixed; bottom:18px; left:50%; transform:translateX(-50%); z-index:20; display:flex; gap:10px; }
+  .controlBtn{ width:64px; height:64px; border-radius:50%; background:rgba(255,255,255,0.12); color:#fff; font-size:22px; border:1px solid rgba(255,255,255,0.06); }
+  .small{ font-size:14px; opacity:0.9; }
+</style>
+</head>
+<body>
+
+<div id="hud">Score: 0 | Coins: 0 | Level: 1</div>
+
+<!-- Main Menu -->
+<div id="mainMenu" class="overlay">
+  <div class="title">3D Car Racing</div>
+  <div class="small">Checkpoint = +50 points · Energy = +5 coins</div>
+  <div style="margin-top:12px; display:flex; gap:10px; flex-direction:column; align-items:center;">
+    <button id="startBtn">▶ Start Game</button>
+    <button id="openStoreBtn">🚗 Car Store</button>
+    <button id="resetCoinsBtn" style="background:#444;color:#fff;">Reset Coins</button>
+  </div>
+</div>
+
+<!-- Car Store -->
+<div id="carStoreOverlay" class="overlay hidden">
+  <div style="font-size:22px; font-weight:700;">Car Store (Coins)</div>
+  <div id="carButtons" style="display:flex; flex-direction:column; gap:8px;"></div>
+  <div style="margin-top:8px">
+    <button id="closeStoreBtn" style="background:#777;color:#fff;">Close</button>
+  </div>
+</div>
+
+<!-- Level Complete -->
+<div id="levelCompleteOverlay" class="overlay hidden">
+  <div style="font-size:28px; font-weight:700;">🎉 Level Complete!</div>
+  <div id="levelCoinsText" class="small">Coins earned: 0</div>
+  <div style="display:flex; gap:12px; margin-top:12px;">
+    <button id="nextLevelBtn">Next Level ▶</button>
+    <button id="toMainFromLevel" style="background:#555;color:#fff;">Main Menu</button>
+  </div>
+</div>
+
+<!-- Game Over -->
+<div id="gameOverOverlay" class="overlay hidden">
+  <div class="big">💥 Game Over</div>
+  <div id="finalScore" style="font-size:20px;">Score: 0</div>
+  <div id="finalCoins" style="font-size:20px;">Coins: 0</div>
+  <div style="display:flex; gap:10px; margin-top:12px;">
+    <button id="restartBtn" style="background:#ff6b6b;color:#fff;">Restart</button>
+    <button id="mainMenuBtn" style="background:#4d79ff;color:#fff;">Main Menu</button>
+  </div>
+</div>
+
+<!-- Mobile Controls -->
+<div id="mobileControls">
+  <button class="controlBtn" id="leftBtn">◀</button>
+  <button class="controlBtn" id="upBtn">▲</button>
+  <button class="controlBtn" id="downBtn">▼</button>
+  <button class="controlBtn" id="rightBtn">▶</button>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/three@0.155.0/build/three.min.js"></script>
+<script>
+/* ---------- सेटअप ---------- */
+let scene = new THREE.Scene();
+let roadColors = [0x444444,0x2c3e50,0x8e44ad,0x27ae60,0x7f8c8d,0x1abc9c];
+scene.fog = new THREE.Fog(0x87ceeb,10,80);
+
+let camera = new THREE.PerspectiveCamera(60, innerWidth/innerHeight, 0.1, 200);
+camera.position.set(0,10,18); camera.lookAt(0,0,0);
+
+let renderer = new THREE.WebGLRenderer({antialias:true});
+renderer.setSize(innerWidth, innerHeight);
+document.body.appendChild(renderer.domElement);
+
+window.addEventListener('resize', ()=> {
+  camera.aspect = innerWidth/innerHeight; camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+});
+
+/* ---------- गेम वेरिएबल्स ---------- */
+const lanes = [-3,0,3];
+let currentLane = 1;
+
+let carModels = [], currentCarIndex = 0, playerCar;
+let obstacles = [], energies = [], checkpoints = [];
+
+let score = 0, totalCoins = 0, level = 1;
+let gameOver = false, paused = true; // start paused until Start pressed
+
+let obstacleSpeed = 0.22, obstacleSpawnInterval = 1500, lastObstacleTime = 0;
+let energySpawnInterval = 3200, lastEnergyTime = 0;
+let checkpointSpawnInterval = 5200, lastCheckpointTime = 0;
+const maxLevel = 50;
+
+/* ---------- UI Refs ---------- */
+const hud = document.getElementById('hud');
+const mainMenu = document.getElementById('mainMenu');
+const startBtn = document.getElementById('startBtn');
+const openStoreBtn = document.getElementById('openStoreBtn');
+const carStoreOverlay = document.getElementById('carStoreOverlay');
+const carButtonsDiv = document.getElementById('carButtons');
+const closeStoreBtn = document.getElementById('closeStoreBtn');
+const levelCompleteOverlay = document.getElementById('levelCompleteOverlay');
+const nextLevelBtn = document.getElementById('nextLevelBtn');
+const levelCoinsText = document.getElementById('levelCoinsText');
+const toMainFromLevel = document.getElementById('toMainFromLevel');
+const gameOverOverlay = document.getElementById('gameOverOverlay');
+const finalScore = document.getElementById('finalScore');
+const finalCoins = document.getElementById('finalCoins');
+const restartBtn = document.getElementById('restartBtn');
+const mainMenuBtn = document.getElementById('mainMenuBtn');
+const resetCoinsBtn = document.getElementById('resetCoinsBtn');
+
+const carCosts = [0,50,120,200,350];
+
+/* ---------- ऑब्जेक्ट्स: रोड, मार्कर्स, लाइट ---------- */
+let roadMat = new THREE.MeshLambertMaterial({color: roadColors[0]});
+const roadGeo = new THREE.PlaneGeometry(12,200);
+const road = new THREE.Mesh(roadGeo, roadMat);
+road.rotation.x = -Math.PI/2; road.position.z = -100;
+scene.add(road);
+
+const laneMarkers = [];
+for(let i=-1;i<=1;i++){
+  const lmGeo = new THREE.PlaneGeometry(0.18,200);
+  const lmMat = new THREE.MeshBasicMaterial({color:0xffffff, transparent:true, opacity:0.8});
+  const lm = new THREE.Mesh(lmGeo, lmMat);
+  lm.rotation.x = -Math.PI/2; lm.position.x = lanes[i+1]; lm.position.z = -100;
+  scene.add(lm); laneMarkers.push(lm);
+}
+
+scene.add(new THREE.AmbientLight(0xffffff,0.6));
+const dirLight = new THREE.DirectionalLight(0xffffff,0.7); dirLight.position.set(10,30,20); scene.add(dirLight);
+
+/* ---------- कार मॉडल (सिंपल) ---------- */
+const colors = [0xff4444,0x33dd66,0x3399ff,0xffcc00,0xaa66ff];
+colors.forEach(col => {
+  const g = new THREE.BoxGeometry(1.2,0.8,2.2);
+  const m = new THREE.MeshLambertMaterial({color: col});
+  const car = new THREE.Mesh(g,m);
+  car.position.set(lanes[1],0.5,6); car.visible=false; scene.add(car);
+  carModels.push(car);
+});
+currentCarIndex = 0;
+playerCar = carModels[currentCarIndex]; playerCar.visible = true;
+
+/* ---------- स्पॉन फ़ंक्शन्स ---------- */
+function spawnObstacle(){
+  const laneIndex = Math.floor(Math.random()*lanes.length);
+  const g = new THREE.BoxGeometry(1,1,2);
+  const m = new THREE.MeshLambertMaterial({color:0x2ecc71});
+  const ob = new THREE.Mesh(g,m);
+  ob.position.set(lanes[laneIndex],0.5,-100);
+  scene.add(ob); obstacles.push(ob);
+}
+function spawnEnergy(){
+  const laneIndex = Math.floor(Math.random()*lanes.length);
+  const g = new THREE.SphereGeometry(0.38,12,12);
+  const m = new THREE.MeshLambertMaterial({color:0x00ffff, emissive:0x00ffff});
+  const e = new THREE.Mesh(g,m);
+  e.position.set(lanes[laneIndex],0.5,-100);
+  scene.add(e); energies.push(e);
+}
+function spawnCheckpoint(){
+  const laneIndex = Math.floor(Math.random()*lanes.length);
+  const g = new THREE.TorusGeometry(0.7,0.18,8,18);
+  const m = new THREE.MeshLambertMaterial({color:0xffcc00, emissive:0xffcc33});
+  const c = new THREE.Mesh(g,m);
+  c.position.set(lanes[laneIndex],0.5,-100);
+  c.rotation.x = Math.PI/2;
+  scene.add(c); checkpoints.push(c);
+}
+
+/* ---------- ब्लास्ट इफ़ेक्ट ---------- */
+function createBlast(x,z){
+  for(let i=0;i<24;i++){
+    const geo = new THREE.SphereGeometry(0.08,6,6);
+    const mat = new THREE.MeshBasicMaterial({color: 0xff8a00});
+    const p = new THREE.Mesh(geo,mat);
+    p.position.set(x,0.5,z);
+    scene.add(p);
+    const dx = (Math.random()-0.5)*2.6, dz = (Math.random()-0.5)*2.6, dy = Math.random()*0.6;
+    let life = 36 + Math.floor(Math.random()*20);
+    (function anim(){
+      if(life-- <= 0){ try{ scene.remove(p); }catch(e){}; return; }
+      p.position.x += dx*0.12; p.position.z += dz*0.12; p.position.y += dy*0.04;
+      p.material.opacity = Math.max(0, life/60);
+      requestAnimationFrame(anim);
+    })();
+  }
+}
+
+/* ---------- UI - Car Store ---------- */
+function showCarStore(){
+  carStoreOverlay.classList.remove('hidden');
+  carButtonsDiv.innerHTML = '';
+  carModels.forEach((c,i)=>{
+    const btn = document.createElement('button');
+    btn.className='carBtn';
+    btn.innerText = `Car ${i+1} — Cost: ${carCosts[i]} coins`;
+    btn.onclick = ()=> {
+      if(totalCoins >= carCosts[i]){
+        totalCoins -= carCosts[i];
+        selectCar(i);
+        carStoreOverlay.classList.add('hidden');
+        updateHUD();
+      } else {
+        alert('Coins कम हैं!');
+      }
+    }
+    carButtonsDiv.appendChild(btn);
+  });
+}
+function selectCar(i){
+  carModels[currentCarIndex].visible = false;
+  currentCarIndex = i;
+  playerCar = carModels[i];
+  playerCar.visible = true;
+  playerCar.position.x = lanes[currentLane];
+}
+
+/* ---------- खेल नियंत्रण ---------- */
+function startGame(){
+  // reset playing elements but keep totalCoins
+  gameOver = false; paused = false;
+  score = 0; obstacleSpeed = 0.22; obstacleSpawnInterval = 1500;
+  obstacles.forEach(o=>scene.remove(o)); obstacles=[]; energies.forEach(e=>scene.remove(e)); energies=[]; checkpoints.forEach(c=>scene.remove(c)); checkpoints=[];
+  currentLane = 1; playerCar.position.set(lanes[currentLane],0.5,6);
+  mainMenu.classList.add('hidden'); gameOverOverlay.classList.add('hidden'); levelCompleteOverlay.classList.add('hidden');
+  road.material.color.setHex(roadColors[(level-1)%roadColors.length]);
+  updateHUD();
+}
+function goToMainMenu(){
+  paused = true; gameOver = false;
+  mainMenu.classList.remove('hidden'); carStoreOverlay.classList.add('hidden'); gameOverOverlay.classList.add('hidden'); levelCompleteOverlay.classList.add('hidden');
+}
+
+/* ---------- इवेंट्स ---------- */
+startBtn.addEventListener('click', ()=> { level = 1; totalCoins = totalCoins || 0; startGame(); });
+openStoreBtn.addEventListener('click', ()=> { showCarStore(); });
+closeStoreBtn.addEventListener('click', ()=> { carStoreOverlay.classList.add('hidden'); });
+nextLevelBtn.addEventListener('click', ()=> {
+  // next level: reward coins & resume
+  totalCoins += level * 15;
+  level++;
+  paused = false;
+  levelCompleteOverlay.classList.add('hidden');
+  road.material.color.setHex(roadColors[(level-1)%roadColors.length]);
+  updateHUD();
+});
+toMainFromLevel.addEventListener('click', ()=> { goToMainMenu(); levelCompleteOverlay.classList.add('hidden'); });
+restartBtn.addEventListener('click', ()=> { startGame(); });
+mainMenuBtn.addEventListener('click', ()=> { goToMainMenu(); });
+
+// reset coins for testing
+resetCoinsBtn.addEventListener('click', ()=> { totalCoins = 0; updateHUD(); });
+
+/* keyboard */
+window.addEventListener('keydown', (e)=> {
+  if(e.key === 'ArrowLeft' || e.key==='a' || e.key==='A') { if(currentLane>0) currentLane--; }
+  if(e.key === 'ArrowRight' || e.key==='d' || e.key==='D') { if(currentLane<lanes.length-1) currentLane++; }
+  if(e.key === 'r' || e.key === 'R'){ if(gameOver) startGame(); }
+});
+
+/* mobile controls */
+document.getElementById('leftBtn').addEventListener('click', ()=>{ if(currentLane>0) currentLane--; });
+document.getElementById('rightBtn').addEventListener('click', ()=>{ if(currentLane<lanes.length-1) currentLane++; });
+document.getElementById('upBtn').addEventListener('click', ()=>{ /* future: accelerate */ });
+document.getElementById('downBtn').addEventListener('click', ()=>{ /* future: brake */ });
+
+/* ---------- गेम अपडेट ---------- */
+function updateHUD(){
+  hud.innerText = `Score: ${Math.floor(score)} | Coins: ${totalCoins} | Level: ${level}`;
+}
+let lastTime = performance.now();
+
+function update(delta){
+  if(gameOver || paused) return;
+
+  // smooth lane movement
+  playerCar.position.x += (lanes[currentLane] - playerCar.position.x) * 0.25;
+
+  // move road and markers to create forward motion
+  road.position.z += obstacleSpeed;
+  laneMarkers.forEach(lm => { lm.position.z += obstacleSpeed; if(lm.position.z > 0) lm.position.z = -100; });
+
+  // spawn obstacles / energies / checkpoints
+  if(performance.now() - lastObstacleTime > obstacleSpawnInterval){ spawnObstacle(); lastObstacleTime = performance.now(); }
+  if(performance.now() - lastEnergyTime > energySpawnInterval){ spawnEnergy(); lastEnergyTime = performance.now(); }
+  if(performance.now() - lastCheckpointTime > checkpointSpawnInterval){ spawnCheckpoint(); lastCheckpointTime = performance.now(); }
+
+  // update obstacles
+  for(let i = obstacles.length-1; i>=0; i--){
+    const o = obstacles[i]; o.position.z += obstacleSpeed;
+    if(o.position.z > 12){ scene.remove(o); obstacles.splice(i,1); score += 12; totalCoins += 2; continue; }
+    if(Math.abs(o.position.z - playerCar.position.z) < 1.6 && Math.abs(o.position.x - playerCar.position.x) < 1.0){
+      // collision
+      createBlast(playerCar.position.x, playerCar.position.z);
+      // show game over with stats
+      finalScore.innerText = `Score: ${Math.floor(score)}`;
+      finalCoins.innerText = `Coins: ${totalCoins}`;
+      gameOver = true; paused = true;
+      gameOverOverlay.classList.remove('hidden');
+    }
+  }
+
+  // energies (coins)
+  for(let i = energies.length-1; i>=0; i--){
+    const e = energies[i]; e.position.z += obstacleSpeed;
+    e.rotation.y += 0.12;
+    if(e.position.z > 12){ scene.remove(e); energies.splice(i,1); continue; }
+    if(Math.abs(e.position.z - playerCar.position.z) < 1.4 && Math.abs(e.position.x - playerCar.position.x) < 1.0){
+      totalCoins += 5; scene.remove(e); energies.splice(i,1);
+    }
+  }
+
+  // checkpoints (score +50)
+  for(let i = checkpoints.length-1; i>=0; i--){
+    const c = checkpoints[i]; c.position.z += obstacleSpeed;
+    c.rotation.z += 0.08;
+    if(c.position.z > 12){ scene.remove(c); checkpoints.splice(i,1); continue; }
+    if(Math.abs(c.position.z - playerCar.position.z) < 1.6 && Math.abs(c.position.x - playerCar.position.x) < 1.0){
+      score += 50; scene.remove(c); checkpoints.splice(i,1);
+      // small visual feedback
+      // (could add floating text - kept simple)
+    }
+  }
+
+  // scoring over time
+  score += delta * 0.012;
+
+  // level up check
+  let newLevel = Math.min(maxLevel, Math.floor(score / 1000) + 1);
+  if(newLevel > level){
+    // level complete: pause and show overlay
+    paused = true;
+    levelCompleteOverlay.classList.remove('hidden');
+    levelCoinsText.innerText = `Coins earned: ${newLevel * 10}`;
+    level = newLevel;
+  }
+
+  // increase difficulty
+  obstacleSpeed = 0.22 + score * 0.0018;
+  obstacleSpawnInterval = Math.max(600, 1500 - score * 2);
+
+  updateHUD();
+}
+
+/* ---------- animate ---------- */
+function animate(){
+  requestAnimationFrame(animate);
+  const now = performance.now(); const delta = now - lastTime; lastTime = now;
+  update(delta);
+  renderer.render(scene, camera);
+}
+animate();
+
+/* ---------- शुरुआत में Main Menu दिखाएँ ---------- */
+goToMainMenu();
+
+/* ---------- पहले-बार स्टोर सैटअप ---------- */
+showCarStore(); // to populate buttons but hide right away
+carStoreOverlay.classList.add('hidden');
+</script>
+</body>
+</html>
